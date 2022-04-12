@@ -41,7 +41,8 @@ def rewrite_query(sql):
     comments = []
     hints = []
     index_hints = []
-    for match in query_rewrite_re.findall(sql):
+    for match_iter in query_rewrite_re.finditer(sql):
+        match = match_iter.group(1)
         if match in SELECT_HINT_TOKENS:
             hints.append(match)
         elif match.startswith("label="):
@@ -49,6 +50,7 @@ def rewrite_query(sql):
         elif match.startswith("index="):
             # Extra parsing
             index_match = index_rule_re.match(match)
+            start_pos = match_iter.start(0)
             if index_match:
                 index_hints.append(
                     (
@@ -56,6 +58,7 @@ def rewrite_query(sql):
                         index_match.group("rule"),
                         index_match.group("index_names"),
                         index_match.group("for_what"),
+                        start_pos,
                     )
                 )
 
@@ -176,7 +179,7 @@ replacement_template = (
 )
 
 
-def modify_sql_index_hints(sql, table_name, rule, index_names, for_what):
+def modify_sql_index_hints(sql, table_name, rule, index_names, for_what, start_pos):
     table_spec_re = table_spec_re_template.format(table_name=table_name)
     if for_what:
         for_section = "FOR {} ".format(for_what)
@@ -187,4 +190,12 @@ def modify_sql_index_hints(sql, table_name, rule, index_names, for_what):
         for_section=for_section,
         index_names=("" if index_names == "NONE" else index_names),
     )
-    return re.sub(table_spec_re, replacement, sql, count=1, flags=re.VERBOSE)
+    matches = [
+        match
+        for match in re.finditer(table_spec_re, sql, flags=re.VERBOSE)
+        if match.start(0) < start_pos
+        # only need to look at the position before inserted comment
+    ]
+    nearest_match_start = matches[len(matches) - 1].start(0)
+
+    return sql[0:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
