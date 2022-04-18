@@ -41,7 +41,7 @@ def rewrite_query(sql):
     comments = []
     hints = []
     index_hints = []
-    for match_iter in query_rewrite_re.finditer(sql):
+    for i, match_iter in enumerate(query_rewrite_re.finditer(sql)):
         match = match_iter.group(1)
         if match in SELECT_HINT_TOKENS:
             hints.append(match)
@@ -50,16 +50,17 @@ def rewrite_query(sql):
         elif match.startswith("index="):
             # Extra parsing
             index_match = index_rule_re.match(match)
-            start_pos = match_iter.start(0)
+            # comment will be removed cause string index change
+            start_pos = match_iter.start(0) - len(match_iter.group(0)) * i
             if index_match:
                 index_hints.append(
-                    (
+                    [
                         index_match.group("table_name"),
                         index_match.group("rule"),
                         index_match.group("index_names"),
                         index_match.group("for_what"),
                         start_pos,
-                    )
+                    ]
                 )
 
         # Silently fail on unrecognized rewrite requests
@@ -158,8 +159,11 @@ def modify_sql(sql, add_comments, add_hints, add_index_hints):
     remainder = sql[match.end() :]
 
     if tokens[0] == "SELECT" and add_index_hints:
+        total_sql_len_diff = 0
         for index_hint in add_index_hints:
-            remainder = modify_sql_index_hints(remainder, *index_hint)
+            index_hint[-1] -= match.end() + total_sql_len_diff
+            remainder, sql_len_diff = modify_sql_index_hints(remainder, *index_hint)
+            total_sql_len_diff += sql_len_diff
 
     # Join everything
     tokens.append(remainder)
@@ -198,4 +202,9 @@ def modify_sql_index_hints(sql, table_name, rule, index_names, for_what, start_p
     ]
     nearest_match_start = matches[len(matches) - 1].start(0)
 
-    return sql[0:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
+    new_sql = sql[0:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
+
+    # use this diff to correct start_pos of following hints
+    sql_len_diff = len(sql) - len(new_sql)
+
+    return new_sql, sql_len_diff
