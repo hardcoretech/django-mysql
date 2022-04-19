@@ -162,8 +162,11 @@ def modify_sql(sql, add_comments, add_hints, add_index_hints):
         total_sql_len_diff = 0
         for index_hint in add_index_hints:
             index_hint[-1] -= match.end() + total_sql_len_diff
-            remainder, sql_len_diff = modify_sql_index_hints(remainder, *index_hint)
-            total_sql_len_diff += sql_len_diff
+            new_sql = modify_sql_index_hints(remainder, *index_hint)
+
+            # use this diff to correct start_pos of following hints
+            total_sql_len_diff += len(remainder) - len(new_sql)
+            remainder = new_sql
 
     # Join everything
     tokens.append(remainder)
@@ -200,11 +203,8 @@ def modify_sql_index_hints(sql, table_name, rule, index_names, for_what, start_p
         if match.start(0) < start_pos
         # only need to look at the position before inserted comment
     ]
-    nearest_match_start = matches[len(matches) - 1].start(0)
+    nearest_match_start = matches[-1].start(0)
 
-    new_sql = sql[0:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
+    new_sql = sql[:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
 
-    # use this diff to correct start_pos of following hints
-    sql_len_diff = len(sql) - len(new_sql)
-
-    return new_sql, sql_len_diff
+    return new_sql
