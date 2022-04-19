@@ -41,7 +41,8 @@ def rewrite_query(sql):
     comments = []
     hints = []
     index_hints = []
-    for match in query_rewrite_re.findall(sql):
+    for i, match_iter in enumerate(query_rewrite_re.finditer(sql)):
+        match = match_iter.group(1)
         if match in SELECT_HINT_TOKENS:
             hints.append(match)
         elif match.startswith("label="):
@@ -49,14 +50,17 @@ def rewrite_query(sql):
         elif match.startswith("index="):
             # Extra parsing
             index_match = index_rule_re.match(match)
+            # comment will be removed cause string index change
+            start_pos = match_iter.start(0) - len(match_iter.group(0)) * i
             if index_match:
                 index_hints.append(
-                    (
+                    [
                         index_match.group("table_name"),
                         index_match.group("rule"),
                         index_match.group("index_names"),
                         index_match.group("for_what"),
-                    )
+                        start_pos,
+                    ]
                 )
 
         # Silently fail on unrecognized rewrite requests
@@ -155,8 +159,14 @@ def modify_sql(sql, add_comments, add_hints, add_index_hints):
     remainder = sql[match.end() :]
 
     if tokens[0] == "SELECT" and add_index_hints:
+        total_sql_len_diff = 0
         for index_hint in add_index_hints:
-            remainder = modify_sql_index_hints(remainder, *index_hint)
+            index_hint[-1] -= match.end() + total_sql_len_diff
+            new_sql = modify_sql_index_hints(remainder, *index_hint)
+
+            # use this diff to correct start_pos of following hints
+            total_sql_len_diff += len(remainder) - len(new_sql)
+            remainder = new_sql
 
     # Join everything
     tokens.append(remainder)
@@ -176,7 +186,7 @@ replacement_template = (
 )
 
 
-def modify_sql_index_hints(sql, table_name, rule, index_names, for_what):
+def modify_sql_index_hints(sql, table_name, rule, index_names, for_what, start_pos):
     table_spec_re = table_spec_re_template.format(table_name=table_name)
     if for_what:
         for_section = "FOR {} ".format(for_what)
@@ -187,4 +197,14 @@ def modify_sql_index_hints(sql, table_name, rule, index_names, for_what):
         for_section=for_section,
         index_names=("" if index_names == "NONE" else index_names),
     )
-    return re.sub(table_spec_re, replacement, sql, count=1, flags=re.VERBOSE)
+    matches = [
+        match
+        for match in re.finditer(table_spec_re, sql, flags=re.VERBOSE)
+        if match.start(0) < start_pos
+        # only need to look at the position before inserted comment
+    ]
+    nearest_match_start = matches[-1].start(0)
+
+    new_sql = sql[:nearest_match_start] + re.sub(table_spec_re, replacement, sql[nearest_match_start:], count=1, flags=re.VERBOSE)
+
+    return new_sql
